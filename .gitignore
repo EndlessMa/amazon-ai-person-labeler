@@ -1,0 +1,18 @@
+node_modules/
+out/
+dist/
+release/
+coverage/
+.DS_Store
+*.log
+tmp/*
+!tmp/.gitkeep
+
+# Local manual-test inputs and batch outputs. These may contain user images and
+# must never be committed or uploaded to the private build repository.
+/AI人物标签-*/
+/添加标签测试*/
+/移除标签测试*/
+
+# Local design-tool working data.
+/.impeccable/

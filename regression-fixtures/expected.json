@@ -1,0 +1,17 @@
+{
+  "ruleVersion": "amazon-ai-person-xmp-v1",
+  "target": "contains-synthetic-performer",
+  "expectedDetection": {
+    "01-未标记.png": "untagged",
+    "02-已合规.png": "compliant",
+    "03-重复待规范.png": "duplicate",
+    "04-近似值.png": "similar",
+    "05-XMP损坏.png": "MALFORMED_METADATA",
+    "06-APNG.png": "ANIMATED_PNG",
+    "07-未标记.jpg": "untagged",
+    "08-不支持.txt": "UNSUPPORTED_FORMAT"
+  },
+  "unsafeArchives": {
+    "unsafe-traversal.zip": "ARCHIVE_PATH_UNSAFE"
+  }
+}

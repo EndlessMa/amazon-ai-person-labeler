@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "ruleVersion": "amazon-ai-person-xmp-v1",
+  "target": {
+    "namespace": "http://purl.org/dc/elements/1.1/",
+    "property": "dc:subject",
+    "container": "rdf:Bag",
+    "value": "contains-synthetic-performer",
+    "comparison": "case-sensitive-exact-no-trim"
+  },
+  "notes": [
+    "此文件仅用于发布审计；运行时规则已编译进应用且不可由用户修改。",
+    "V1 不判断图片是否由 AI 生成，只处理用户已经确认需要标记的静态图片。"
+  ]
+}
+

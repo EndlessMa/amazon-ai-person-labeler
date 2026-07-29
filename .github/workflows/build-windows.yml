@@ -1,0 +1,56 @@
+name: Build Windows x64
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-windows:
+    name: Check and package portable EXE
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7.0.1
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6.0.9
+        with:
+          version: 11
+
+      - name: Install Node.js
+        uses: actions/setup-node@v7.0.0
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run checks
+        run: pnpm check
+
+      - name: Build Windows x64 portable EXE
+        run: pnpm dist:win:x64
+
+      - name: Upload Windows package
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: ai-person-labeler-windows-x64-${{ github.sha }}
+          path: |
+            release/*-windows-x64.exe
+            release/release-manifest.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
