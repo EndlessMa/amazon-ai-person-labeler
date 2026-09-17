@@ -1,12 +1,10 @@
 import {
-  Archive,
   Check,
   CheckCircle2,
   ChevronDown,
   CircleAlert,
   CircleCheck,
   CircleX,
-  ClipboardCheck,
   FileImage,
   FilePlus2,
   FileSpreadsheet,
@@ -40,9 +38,9 @@ import {
 import {
   TARGET_SUBJECT,
   type AppInfo,
+  type AppPreferences,
   type BatchEvent,
   type BatchSummary,
-  type FileResult,
   type InputKind,
   type InputSelection,
   type OperationMode,
@@ -53,6 +51,8 @@ import {
 } from '../../shared/contracts'
 import { desktopApi } from './demo'
 
+type EditableMode = Exclude<OperationMode, 'detect'>
+
 type Stage = 'setup' | 'preflighting' | 'review' | 'processing' | 'complete'
 type FilterValue =
   | 'all'
@@ -60,14 +60,17 @@ type FilterValue =
   | 'error'
   | 'selected'
 type ModalKind =
-  | 'add-confirm'
   | 'remove-confirm'
   | 'recovery-delete'
   | null
 type Notice = { tone: 'info' | 'success' | 'warning' | 'danger'; text: string }
+type PreflightRunOptions = {
+  checkOutput?: boolean
+  autoProcess?: boolean
+}
 
 const MODE_META: Record<
-  OperationMode,
+  EditableMode,
   {
     label: string
     short: string
@@ -75,12 +78,6 @@ const MODE_META: Record<
     Icon: typeof ScanSearch
   }
 > = {
-  detect: {
-    label: '仅检测',
-    short: '检测',
-    description: '只读检查 XMP 标签，不生成图片副本',
-    Icon: ScanSearch
-  },
   add: {
     label: '添加标签',
     short: '添加',
@@ -121,7 +118,7 @@ const PHASE_LABELS: Record<string, string> = {
   extracting: '安全解压',
   processing: '处理副本',
   verifying: '独立二次校验',
-  reporting: '生成报告',
+  reporting: '整理结果',
   complete: '处理完成',
   cancelled: '已取消'
 }
@@ -244,214 +241,19 @@ function StatusPill({
   )
 }
 
-function EmptyDetail(): React.JSX.Element {
-  return (
-    <aside className="detail-panel empty-detail">
-      <div className="empty-detail-icon">
-        <ClipboardCheck size={24} />
-      </div>
-      <h2>XMP 详情</h2>
-      <p>预检后选择一张图片，这里会显示全部 dc:subject 值和精确匹配结果。</p>
-      <div className="rule-preview">
-        <span>固定目标值</span>
-        <code>{TARGET_SUBJECT}</code>
-      </div>
-    </aside>
-  )
-}
-
-function FileDetail({ file }: { file: ScannedFile }): React.JSX.Element {
-  const subject = file.subject
-  const state = stateOf(file)
-  return (
-    <aside className="detail-panel">
-      <div className="detail-heading">
-        <div>
-          <span className="eyebrow">只读检查</span>
-          <h2>XMP 详情</h2>
-        </div>
-        <StatusPill state={state} compact />
-      </div>
-
-      <div className="detail-file">
-        {file.thumbnailDataUrl ? (
-          <img src={file.thumbnailDataUrl} alt="" />
-        ) : (
-          <span className="thumb-placeholder">
-            <ImageIcon size={19} />
-          </span>
-        )}
-        <div>
-          <strong title={file.displayName}>{file.displayName}</strong>
-          <span title={file.relativePath}>{file.relativePath}</span>
-        </div>
-      </div>
-
-      <dl className="detail-facts">
-        <div>
-          <dt>文件大小</dt>
-          <dd>{formatBytes(file.bytes)}</dd>
-        </div>
-        <div>
-          <dt>图像尺寸</dt>
-          <dd>
-            {file.width && file.height ? `${file.width} × ${file.height}` : '—'}
-          </dd>
-        </div>
-        <div>
-          <dt>修改时间</dt>
-          <dd>{formatDate(file.modifiedMs)}</dd>
-        </div>
-        <div>
-          <dt>精确匹配数量</dt>
-          <dd className={subject?.exactCount ? 'detail-emphasis' : ''}>
-            {subject?.exactCount ?? 0}
-          </dd>
-        </div>
-      </dl>
-
-      <div className="subject-section">
-        <div className="subject-title">
-          <span>dc:subject 全部值</span>
-          <small>{subject?.values.length ?? 0} 项</small>
-        </div>
-        {subject?.values.length ? (
-          <ol className="subject-values">
-            {subject.values.map((value, index) => {
-              const exact = value === TARGET_SUBJECT
-              const similar = subject.similarValues.includes(value)
-              return (
-                <li key={`${value}-${index}`}>
-                  <code title={value}>{value}</code>
-                  {exact ? <b className="value-exact">精确</b> : null}
-                  {similar ? <b className="value-similar">相似</b> : null}
-                </li>
-              )
-            })}
-          </ol>
-        ) : (
-          <div className="empty-values">未找到 dc:subject 值</div>
-        )}
-      </div>
-
-      {subject?.similarValues.length ? (
-        <div className="inline-warning">
-          <TriangleAlert size={15} />
-          <span>相似值会原样保留，不视为合规标签。</span>
-        </div>
-      ) : null}
-      {file.errorMessage ? (
-        <div className="inline-error">
-          <CircleX size={15} />
-          <span>{file.errorMessage}</span>
-        </div>
-      ) : null}
-    </aside>
-  )
-}
-
-function ResultDetail({
-  result,
-  file
-}: {
-  result: FileResult
-  file?: ScannedFile
-}): React.JSX.Element {
-  const passed = result.outcome === 'passed'
-  return (
-    <aside className="detail-panel result-detail">
-      <div className="detail-heading">
-        <div>
-          <span className="eyebrow">处理记录</span>
-          <h2>处理详情</h2>
-        </div>
-        <span
-          className={`result-badge ${passed ? 'result-success' : 'result-danger'}`}
-        >
-          {passed ? <CircleCheck size={14} /> : <CircleX size={14} />}
-          {passed ? '通过' : '失败'}
-        </span>
-      </div>
-
-      <div className="detail-file">
-        {file?.thumbnailDataUrl ? (
-          <img src={file.thumbnailDataUrl} alt="" />
-        ) : (
-          <span className="thumb-placeholder">
-            <FileImage size={19} />
-          </span>
-        )}
-        <div>
-          <strong>{file?.displayName ?? basename(result.sourcePath)}</strong>
-          <span>{file?.relativePath ?? result.sourcePath}</span>
-        </div>
-      </div>
-
-      <dl className="result-facts">
-        <div>
-          <dt>原始状态</dt>
-          <dd>
-            {result.originalState
-              ? SUBJECT_META[result.originalState].label
-              : '—'}
-          </dd>
-        </div>
-        <div>
-          <dt>执行动作</dt>
-          <dd>{ACTION_LABELS[result.action]}</dd>
-        </div>
-        <div>
-          <dt>二次校验</dt>
-          <dd className={passed ? 'passed-text' : 'failed-text'}>
-            {passed ? '通过' : result.errorMessage ?? '失败'}
-          </dd>
-        </div>
-        <div>
-          <dt>完成时间</dt>
-          <dd>{formatDate(result.finishedAt)}</dd>
-        </div>
-      </dl>
-
-      {result.payloadSha256 ? (
-        <div className="hash-block">
-          <span>图像载荷 SHA-256</span>
-          <code>{result.payloadSha256}</code>
-          <small>{passed ? '图像像素数据保持字节一致' : '未通过校验'}</small>
-        </div>
-      ) : null}
-
-      {result.outputPath ? (
-        <div className="output-file-block">
-          <span>输出位置</span>
-          <button
-            type="button"
-            title={result.outputPath}
-            onClick={() => void api.openPath(result.outputPath!)}
-          >
-            {result.outputPath}
-          </button>
-        </div>
-      ) : null}
-    </aside>
-  )
-}
-
 function ConfirmModal({
   kind,
   selectedCount,
-  mode,
   onClose,
   onProcess,
   onDeleteRecovery
 }: {
   kind: Exclude<ModalKind, null>
   selectedCount: number
-  mode: OperationMode
   onClose: () => void
   onProcess: () => void
   onDeleteRecovery: () => void
 }): React.JSX.Element {
-  const add = kind === 'add-confirm'
   const recoveryDelete = kind === 'recovery-delete'
 
   return (
@@ -472,33 +274,25 @@ function ConfirmModal({
           <X size={17} />
         </button>
         <div
-          className={`modal-icon ${add ? 'blue' : recoveryDelete ? 'orange' : 'red'}`}
+          className={`modal-icon ${recoveryDelete ? 'orange' : 'red'}`}
         >
-          {add ? (
-            <Tag size={24} />
-          ) : recoveryDelete ? (
+          {recoveryDelete ? (
             <TriangleAlert size={24} />
           ) : (
             <Trash2 size={24} />
           )}
         </div>
         <h2 id="confirm-title">
-          {add
-            ? '确认添加与规范标签'
-            : recoveryDelete
-              ? '删除恢复记录？'
-              : '确认移除标签'}
+          {recoveryDelete ? '删除恢复记录？' : '确认移除标签'}
         </h2>
         <p>
-          {add
-            ? `将处理已勾选的 ${selectedCount} 张图片。源文件保持只读，所有结果写入新的批次目录。`
-            : recoveryDelete
-              ? '删除后，本工具不再提示这条未完成批次。已有输出文件不会被删除。'
-              : `将处理已勾选的 ${selectedCount} 张图片，仅从副本中移除精确目标值。源文件保持只读，所有结果写入新的批次目录。`}
+          {recoveryDelete
+            ? '删除后，本工具不再提示这条未完成批次。已有输出文件不会被删除。'
+            : `将处理已勾选的 ${selectedCount} 张图片，仅从副本中移除精确目标值。源文件保持只读，所有结果写入新的批次目录。`}
         </p>
         {!recoveryDelete ? (
           <div className="modal-rule">
-            <span>{mode === 'remove' ? '将移除' : '固定写入值'}</span>
+            <span>将移除</span>
             <code>{TARGET_SUBJECT}</code>
           </div>
         ) : null}
@@ -517,7 +311,7 @@ function ConfirmModal({
           ) : (
             <button
               type="button"
-              className={`button ${add ? 'primary' : 'danger'}`}
+              className="button danger"
               onClick={onProcess}
             >
               确认并开始处理
@@ -530,7 +324,7 @@ function ConfirmModal({
 }
 
 function App(): React.JSX.Element {
-  const [mode, setMode] = useState<OperationMode>('detect')
+  const [mode, setMode] = useState<EditableMode>('add')
   const [stage, setStage] = useState<Stage>('setup')
   const [inputs, setInputs] = useState<InputSelection[]>([])
   const [recursive, setRecursive] = useState(true)
@@ -541,6 +335,7 @@ function App(): React.JSX.Element {
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<FilterValue>('all')
   const [outputParent, setOutputParent] = useState('')
+  const [defaultOutputFolder, setDefaultOutputFolder] = useState('')
   const [checkedOutputParent, setCheckedOutputParent] = useState('')
   const [progress, setProgress] = useState({ completed: 0, total: 0 })
   const [phase, setPhase] = useState('等待开始')
@@ -571,6 +366,8 @@ function App(): React.JSX.Element {
       if (!mounted) return
       setRecursive(preferences.recursive)
       setShowThumbnails(preferences.showThumbnails)
+      setDefaultOutputFolder(preferences.defaultOutputFolder)
+      setOutputParent((current) => current || preferences.defaultOutputFolder)
       setAppInfo(info)
       setRecovery(recoveryRecord)
     })
@@ -593,18 +390,17 @@ function App(): React.JSX.Element {
   }, [])
 
   const savePreferences = useCallback(
-    (nextRecursive: boolean, nextThumbnails: boolean) => {
-      void api
-        .setPreferences({
-          recursive: nextRecursive,
-          showThumbnails: nextThumbnails
+    async (next: AppPreferences): Promise<boolean> => {
+      try {
+        await api.setPreferences(next)
+        return true
+      } catch {
+        showNotice({
+          tone: 'warning',
+          text: '偏好未能保存，本次操作仍可继续。'
         })
-        .catch(() => {
-          showNotice({
-            tone: 'warning',
-            text: '偏好未能保存，本次操作仍可继续。'
-          })
-        })
+        return false
+      }
     },
     [showNotice]
   )
@@ -642,34 +438,64 @@ function App(): React.JSX.Element {
     }
   }
 
-  const chooseFolder = async (): Promise<void> => {
-    try {
-      addInputs(await api.selectFolder(), 'folder')
-    } catch (error) {
-      showNotice({ tone: 'danger', text: String(error) })
-    }
-  }
-
-  const chooseArchive = async (): Promise<void> => {
-    try {
-      addInputs(await api.selectArchive(), 'archive')
-    } catch (error) {
-      showNotice({ tone: 'danger', text: String(error) })
-    }
-  }
-
-  const chooseOutput = async (): Promise<void> => {
+  const chooseOutput = async (
+    saveAsDefault = false
+  ): Promise<string | undefined> => {
     try {
       const path = await api.selectOutputFolder()
-      if (!path) return
+      if (!path) return undefined
       setOutputParent(path)
       if (path !== checkedOutputParent) setCheckedOutputParent('')
+      if (saveAsDefault) {
+        setDefaultOutputFolder(path)
+        const saved = await savePreferences({
+          recursive,
+          showThumbnails,
+          defaultOutputFolder: path
+        })
+        if (saved) {
+          showNotice({ tone: 'success', text: '默认输出文件夹已保存。' })
+        }
+      }
+      return path
     } catch (error) {
       showNotice({ tone: 'danger', text: String(error) })
+      return undefined
     }
   }
 
-  const handleDrop = async (event: DragEvent<HTMLDivElement>): Promise<void> => {
+  const executeProcess = async (
+    preflightResult: PreflightSummary,
+    fileIds: ReadonlySet<string>,
+    targetOutput: string
+  ): Promise<void> => {
+    setModal(null)
+    setStage('processing')
+    setProgress({ completed: 0, total: fileIds.size })
+    setPhase('正在核对源文件是否在预检后发生变化…')
+    setIsCancelling(false)
+    try {
+      const result = await api.process({
+        batchId: preflightResult.batchId,
+        mode,
+        selectedFileIds: Array.from(fileIds),
+        outputParent: targetOutput
+      })
+      setSummary(result)
+      setFocusedResultId(result.results[0]?.fileId)
+      setStage('complete')
+    } catch (error) {
+      setStage('review')
+      showNotice({
+        tone: 'danger',
+        text: error instanceof Error ? error.message : String(error)
+      })
+    } finally {
+      setIsCancelling(false)
+    }
+  }
+
+  const handleDrop = async (event: DragEvent<HTMLElement>): Promise<void> => {
     event.preventDefault()
     setIsDragging(false)
     const dropped: InputSelection[] = []
@@ -706,14 +532,21 @@ function App(): React.JSX.Element {
     if (stage !== 'setup') resetAnalysis()
   }
 
-  const runPreflight = async (checkOutput = false): Promise<void> => {
+  const runPreflight = async ({
+    checkOutput = false,
+    autoProcess = false
+  }: PreflightRunOptions = {}): Promise<void> => {
     if (!inputs.length) {
       showNotice({ tone: 'warning', text: '请先添加图片、文件夹或压缩包。' })
       return
     }
     const hasArchive = inputs.some((input) => input.kind === 'archive')
-    const needsOutputCheck = checkOutput || hasArchive
-    if (needsOutputCheck && !outputParent) {
+    const needsOutputCheck = checkOutput || autoProcess || hasArchive
+    let targetOutputParent = outputParent
+    if (needsOutputCheck && !targetOutputParent && autoProcess) {
+      targetOutputParent = (await chooseOutput(true)) ?? ''
+    }
+    if (needsOutputCheck && !targetOutputParent) {
       showNotice({
         tone: 'warning',
         text: hasArchive
@@ -724,6 +557,9 @@ function App(): React.JSX.Element {
     }
     const priorSelected = selectedIds
     setStage('preflighting')
+    setProgress({ completed: 0, total: 0 })
+    setCurrentFile('')
+    setIsCancelling(false)
     setPhase(
       needsOutputCheck ? '正在预检并核对磁盘空间…' : '正在扫描输入…'
     )
@@ -732,27 +568,59 @@ function App(): React.JSX.Element {
         mode,
         recursive,
         inputs,
-        ...(needsOutputCheck && outputParent ? { outputParent } : {})
+        ...(needsOutputCheck && targetOutputParent
+          ? { outputParent: targetOutputParent }
+          : {})
       }
       const result = await api.preflight(request)
       setPreflight(result)
       const availableFiles = result.files.filter(eligible)
       const defaultIds = new Set(availableFiles.map((file) => file.id))
-      if (needsOutputCheck && priorSelected.size) {
-        const allowed = new Set(availableFiles.map((file) => file.id))
-        setSelectedIds(
-          new Set(Array.from(priorSelected).filter((id) => allowed.has(id)))
-        )
-      } else {
-        setSelectedIds(defaultIds)
-      }
+      const nextSelectedIds =
+        needsOutputCheck && priorSelected.size && !autoProcess
+          ? new Set(
+              Array.from(priorSelected).filter((id) =>
+                defaultIds.has(id)
+              )
+            )
+          : defaultIds
+      setSelectedIds(nextSelectedIds)
       setFocusedId(availableFiles[0]?.id ?? result.files[0]?.id)
       setCheckedOutputParent(
         needsOutputCheck && result.availableBytes !== undefined
-          ? outputParent
+          ? targetOutputParent
           : ''
       )
       setStage('review')
+      if (autoProcess) {
+        if (!nextSelectedIds.size) {
+          showNotice({
+            tone: 'warning',
+            text: '预检完成，但没有可安全输出的图片。请查看异常项目。'
+          })
+          return
+        }
+        const requiredBytes = availableFiles.reduce(
+          (sum, file) => sum + file.bytes,
+          0
+        )
+        if (
+          result.availableBytes === undefined ||
+          result.availableBytes <
+            requiredBytes + Math.max(requiredBytes * 0.1, 2 * 1024 ** 3)
+        ) {
+          showNotice({
+            tone: 'danger',
+            text:
+              result.availableBytes === undefined
+                ? '未能确认输出位置的可用空间，请更换位置后重试。'
+                : '输出位置可用空间不足，请更换位置后重试。'
+          })
+          return
+        }
+        await executeProcess(result, nextSelectedIds, targetOutputParent)
+        return
+      }
       if (needsOutputCheck) {
         showNotice({
           tone: 'success',
@@ -766,7 +634,7 @@ function App(): React.JSX.Element {
         showNotice({ tone: 'success', text: '预检完成，未发现阻断问题。' })
       }
     } catch (error) {
-      setStage(preflight ? 'review' : 'setup')
+      resetAnalysis()
       showNotice({
         tone: 'danger',
         text: error instanceof Error ? error.message : String(error)
@@ -775,7 +643,6 @@ function App(): React.JSX.Element {
   }
 
   const files = preflight?.files ?? []
-  const focusedFile = files.find((file) => file.id === focusedId)
   const counts = useMemo(() => {
     const count = (state: SubjectState) =>
       files.filter((file) => stateOf(file) === state).length
@@ -820,8 +687,7 @@ function App(): React.JSX.Element {
   const selectedBytes = files
     .filter((file) => selectedIds.has(file.id))
     .reduce((sum, file) => sum + file.bytes, 0)
-  const selectedRequiredBytes =
-    mode === 'detect' ? 32 * 1024 ** 2 : selectedBytes
+  const selectedRequiredBytes = selectedBytes
 
   const toggleSelected = (id: string): void => {
     setSelectedIds((current) => {
@@ -853,14 +719,14 @@ function App(): React.JSX.Element {
       return
     }
     if (!outputParent) {
-      void chooseOutput()
+      void chooseOutput(true)
       return
     }
     if (
       checkedOutputParent !== outputParent ||
       preflight?.availableBytes === undefined
     ) {
-      void runPreflight(true)
+      void runPreflight({ checkOutput: true })
       return
     }
     if (
@@ -874,44 +740,18 @@ function App(): React.JSX.Element {
       })
       return
     }
-    if (mode === 'detect') {
-      void startProcess()
-      return
-    }
-    setModal(mode === 'remove' ? 'remove-confirm' : 'add-confirm')
+    if (mode === 'remove') setModal('remove-confirm')
+    else if (preflight) void executeProcess(preflight, selectedIds, outputParent)
   }
 
   const startProcess = async (): Promise<void> => {
     if (!preflight || !outputParent) return
-    setModal(null)
-    setStage('processing')
-    setProgress({ completed: 0, total: selectedIds.size })
-    setPhase('正在核对源文件是否在预检后发生变化…')
-    setIsCancelling(false)
-    try {
-      const result = await api.process({
-        batchId: preflight.batchId,
-        mode,
-        selectedFileIds: Array.from(selectedIds),
-        outputParent
-      })
-      setSummary(result)
-      setFocusedResultId(result.results[0]?.fileId)
-      setStage('complete')
-    } catch (error) {
-      setStage('review')
-      showNotice({
-        tone: 'danger',
-        text: error instanceof Error ? error.message : String(error)
-      })
-    } finally {
-      setIsCancelling(false)
-    }
+    await executeProcess(preflight, selectedIds, outputParent)
   }
 
   const cancelProcess = async (): Promise<void> => {
     setIsCancelling(true)
-    setPhase('正在安全停止；已完成并校验的输出会保留…')
+    setPhase(stage === 'preflighting' ? '正在取消预检…' : '正在安全停止；已完成并校验的输出会保留…')
     try {
       await api.cancel()
     } catch (error) {
@@ -920,8 +760,8 @@ function App(): React.JSX.Element {
     }
   }
 
-  const changeMode = (nextMode: OperationMode): void => {
-    if (stage === 'processing') return
+  const changeMode = (nextMode: EditableMode): void => {
+    if (stage === 'processing' || stage === 'preflighting') return
     if (nextMode === mode) return
     setMode(nextMode)
     resetAnalysis()
@@ -930,7 +770,7 @@ function App(): React.JSX.Element {
 
   const newBatch = (): void => {
     setInputs([])
-    setOutputParent('')
+    setOutputParent(defaultOutputFolder)
     setQuery('')
     setFilter('all')
     setNotice(undefined)
@@ -959,12 +799,6 @@ function App(): React.JSX.Element {
     }
   }
 
-  const focusedResult = summary?.results.find(
-    (result) => result.fileId === focusedResultId
-  )
-  const focusedResultFile = files.find(
-    (file) => file.id === focusedResult?.fileId
-  )
   const elapsed =
     summary &&
     Math.max(
@@ -979,7 +813,7 @@ function App(): React.JSX.Element {
         <div className="brand-mark">
           <Tag size={17} strokeWidth={2.4} />
         </div>
-        <strong>AI 人物标签工具</strong>
+        <strong>AI人物标签</strong>
         <span>v{appInfo?.version ?? '0.1.0-beta.2'}</span>
         <div className="titlebar-spacer" />
         {isDemo ? <span className="demo-badge">浏览器演示</span> : null}
@@ -990,37 +824,6 @@ function App(): React.JSX.Element {
       </header>
 
       <div className="app-body">
-        <aside className="sidebar">
-          <nav aria-label="处理模式">
-            {(Object.keys(MODE_META) as OperationMode[]).map((item) => {
-              const meta = MODE_META[item]
-              const Icon = meta.Icon
-              return (
-                <button
-                  key={item}
-                  type="button"
-                  className={mode === item ? 'active' : ''}
-                  disabled={stage === 'processing'}
-                  onClick={() => changeMode(item)}
-                >
-                  <Icon size={19} strokeWidth={2} />
-                  <span>{meta.label}</span>
-                </button>
-              )
-            })}
-          </nav>
-          <div className="sidebar-bottom">
-            <div className="privacy-note">
-              <HardDrive size={15} />
-              <span>文件仅在本机处理</span>
-            </div>
-            <div className="version-rule" title={appInfo?.ruleVersion}>
-              规则版本
-              <span>{appInfo?.ruleVersion ?? 'amazon-ai-person-xmp-v1'}</span>
-            </div>
-          </div>
-        </aside>
-
         <section className="workspace">
           {recovery && stage !== 'processing' ? (
             <div className="recovery-banner">
@@ -1078,7 +881,7 @@ function App(): React.JSX.Element {
                         ? '批次已完成，存在未通过项目'
                         : '批次处理完成'}
                     </h1>
-                    <p>已生成报告；所有成功图片均已通过处理后二次校验。</p>
+                    <p>所有成功图片均已通过处理后二次校验并保存到批次文件夹。</p>
                   </div>
                 </div>
 
@@ -1134,19 +937,27 @@ function App(): React.JSX.Element {
                   </dl>
                   <button
                     type="button"
+                    className="button secondary"
+                    onClick={() => void chooseOutput(true)}
+                  >
+                    <FolderInput size={16} />
+                    更换文件夹
+                  </button>
+                  <button
+                    type="button"
+                    className="button secondary"
+                    onClick={newBatch}
+                  >
+                    <RotateCcw size={16} />
+                    新建批次
+                  </button>
+                  <button
+                    type="button"
                     className="button primary"
                     onClick={() => void api.openPath(summary.outputDirectory)}
                   >
                     <FolderOpen size={16} />
                     打开输出
-                  </button>
-                  <button
-                    type="button"
-                    className="button secondary"
-                    onClick={() => void api.openPath(summary.reportPath)}
-                  >
-                    <FileSpreadsheet size={16} />
-                    导出报告
                   </button>
                 </div>
 
@@ -1214,39 +1025,21 @@ function App(): React.JSX.Element {
                   </div>
                 </div>
               </section>
-              {focusedResult ? (
-                <ResultDetail
-                  result={focusedResult}
-                  {...(focusedResultFile ? { file: focusedResultFile } : {})}
-                />
-              ) : (
-                <EmptyDetail />
-              )}
               <footer className="complete-footer">
                 <div>
                   <ShieldCheck size={18} />
                   <span>
                     {summary.mode === 'detect' ? (
                       <>
-                        源文件未修改；检测模式仅生成 <code>report.csv</code>{' '}
-                        与诊断日志
+                        源文件未修改；检测结果仅在当前页面显示
                       </>
                     ) : (
                       <>
-                        源文件未修改；仅通过校验的图片进入{' '}
-                        <code>images/</code> 目录
+                        源文件未修改；成功图片已直接保存到本批次文件夹
                       </>
                     )}
                   </span>
                 </div>
-                <button
-                  type="button"
-                  className="button primary"
-                  onClick={newBatch}
-                >
-                  <RotateCcw size={16} />
-                  新建批次
-                </button>
               </footer>
             </div>
           ) : (
@@ -1264,7 +1057,9 @@ function App(): React.JSX.Element {
                     type="button"
                     className="button secondary"
                     disabled={stage === 'processing' || stage === 'preflighting'}
-                    onClick={() => void runPreflight(Boolean(outputParent))}
+                    onClick={() =>
+                      void runPreflight({ checkOutput: Boolean(outputParent) })
+                    }
                   >
                     <RefreshCw size={15} />
                     重新预检
@@ -1284,24 +1079,19 @@ function App(): React.JSX.Element {
                       <FilePlus2 size={17} />
                       添加图片
                     </button>
-                    <button
-                      type="button"
-                      className="button secondary"
-                      disabled={stage === 'processing' || stage === 'preflighting'}
-                      onClick={() => void chooseFolder()}
-                    >
-                      <FolderInput size={17} />
-                      添加文件夹
-                    </button>
-                    <button
-                      type="button"
-                      className="button secondary"
-                      disabled={stage === 'processing' || stage === 'preflighting'}
-                      onClick={() => void chooseArchive()}
-                    >
-                      <Archive size={17} />
-                      添加 ZIP / RAR
-                    </button>
+                    <label className="mode-select" aria-label="选择标签操作">
+                      <select
+                        value={mode}
+                        disabled={stage === 'processing' || stage === 'preflighting'}
+                        onChange={(event) =>
+                          changeMode(event.currentTarget.value as EditableMode)
+                        }
+                      >
+                        <option value="add">添加标签</option>
+                        <option value="remove">移除标签</option>
+                      </select>
+                      <ChevronDown size={15} aria-hidden="true" />
+                    </label>
                     <div className="switch-control">
                       <div className="recursive-help">
                         <button
@@ -1335,8 +1125,7 @@ function App(): React.JSX.Element {
                             <code>主图.jpg</code>。
                           </p>
                           <p className="recursive-help-note">
-                            它不会改变输出结构：成功图片仍会全部放在同一个
-                            <code>images/</code> 文件夹中。
+                            它不会改变输出结构：成功图片仍会全部直接放在批次文件夹中。
                           </p>
                           <p className="recursive-help-note">
                             直接多选图片时，这个选项没有影响。
@@ -1352,7 +1141,11 @@ function App(): React.JSX.Element {
                           onChange={(event) => {
                             const checked = event.currentTarget.checked
                             setRecursive(checked)
-                            savePreferences(checked, showThumbnails)
+                            void savePreferences({
+                              recursive: checked,
+                              showThumbnails,
+                              defaultOutputFolder
+                            })
                             if (preflight) resetAnalysis()
                           }}
                         />
@@ -1361,8 +1154,102 @@ function App(): React.JSX.Element {
                     </div>
                   </div>
 
-                  <div
-                    className={`drop-zone${isDragging ? ' is-dragging' : ''}${preflight ? ' compact' : ''}`}
+                  <div className="action-bar top-action-bar">
+                    <div className="output-label">
+                      <HardDrive size={17} />
+                      <span>
+                        输出文件夹
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      className="output-path"
+                      disabled={stage === 'processing' || stage === 'preflighting'}
+                      onClick={() => void chooseOutput(true)}
+                    >
+                      <FolderOpen size={16} />
+                      <span>
+                        {outputParent || '点击选择默认输出文件夹'}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      className="button secondary"
+                      disabled={stage === 'processing' || stage === 'preflighting'}
+                      onClick={() => void chooseOutput(true)}
+                    >
+                      更换文件夹
+                    </button>
+                    <div className="disk-status">
+                      {preflight?.availableBytes !== undefined &&
+                      checkedOutputParent === outputParent ? (
+                        <>
+                          <CircleCheck size={15} />
+                          <span>
+                            本次仍需 {formatBytes(selectedRequiredBytes)} ·
+                            可用 {formatBytes(preflight.availableBytes)}
+                          </span>
+                        </>
+                      ) : preflight && outputParent ? (
+                        <>
+                          <CircleAlert size={15} />
+                          <span>需重新预检并检查空间</span>
+                        </>
+                      ) : (
+                        <>
+                          <Info size={15} />
+                          <span>预检后检查磁盘空间</span>
+                        </>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      className="button primary action-primary"
+                      disabled={
+                        stage === 'processing' ||
+                        stage === 'preflighting' ||
+                        (stage === 'setup' && !inputs.length)
+                      }
+                      onClick={() => {
+                        if (stage === 'setup') {
+                          void runPreflight({ autoProcess: true })
+                        }
+                        else requestProcess()
+                      }}
+                    >
+                      {stage === 'preflighting' ? (
+                        <LoaderCircle className="spin" size={16} />
+                      ) : stage === 'setup' ? (
+                        mode === 'add' ? (
+                          <Tag size={16} />
+                        ) : (
+                          <Trash2 size={16} />
+                        )
+                      ) : checkedOutputParent !== outputParent ? (
+                        <HardDrive size={16} />
+                      ) : mode === 'remove' ? (
+                        <Trash2 size={16} />
+                      ) : (
+                        <Tag size={16} />
+                      )}
+                      {stage === 'preflighting'
+                        ? '正在预检'
+                        : stage === 'setup'
+                          ? '一键输出'
+                          : !outputParent
+                            ? '选择输出位置'
+                            : checkedOutputParent !== outputParent
+                              ? '检查空间'
+                              : '开始处理'}
+                    </button>
+                  </div>
+
+                  <button
+                    type="button"
+                    aria-label="添加图片；也可以将图片、文件夹或压缩包拖到这里"
+                    className={`drop-zone${isDragging ? ' is-dragging' : ''}${stage !== 'setup' ? ' compact' : ''}`}
+                    disabled={stage === 'processing' || stage === 'preflighting'}
+                    onClick={() => void chooseFiles()}
                     onDragEnter={(event) => {
                       event.preventDefault()
                       setIsDragging(true)
@@ -1380,11 +1267,11 @@ function App(): React.JSX.Element {
                       <strong>
                         {isDragging
                           ? '松开即可加入本批次'
-                          : '将图片、文件夹或压缩包拖到这里'}
+                          : '拖入图片、文件夹或压缩包，或左键选择图片'}
                       </strong>
                       <span>支持 JPG、JPEG、静态 PNG、ZIP、RAR</span>
                     </div>
-                  </div>
+                  </button>
 
                   {inputs.length ? (
                     <div className="input-list">
@@ -1439,51 +1326,23 @@ function App(): React.JSX.Element {
                     </div>
                   ) : null}
 
-                  {stage === 'setup' ? (
-                    <div className="setup-state">
-                      <div className="setup-guidance">
-                        <div>
-                          <ShieldCheck size={19} />
-                          <span>
-                            <strong>源文件始终只读</strong>
-                            预检只读取文件结构、XMP 与校验信息
-                          </span>
-                        </div>
-                        <div>
-                          <ScanSearch size={19} />
-                          <span>
-                            <strong>先预检再处理</strong>
-                            逐张核对状态后再选择输出位置
-                          </span>
-                        </div>
-                        <div>
-                          <FileSpreadsheet size={19} />
-                          <span>
-                            <strong>每批均有报告</strong>
-                            文件级结果可用 Excel 打开
-                          </span>
-                        </div>
-                      </div>
-                      <button
-                        type="button"
-                        className="button primary preflight-button"
-                        disabled={!inputs.length}
-                        onClick={() => void runPreflight(false)}
-                      >
-                        <ScanSearch size={17} />
-                        开始预检
-                      </button>
-                    </div>
-                  ) : stage === 'preflighting' ? (
+                  {stage === 'setup' ? null : stage === 'preflighting' ? (
                     <div className="loading-state">
                       <LoaderCircle className="spin" size={24} />
                       <strong>{phase}</strong>
                       <span>
                         正在只读检查文件；此阶段不会写入或修改任何图片。
                       </span>
-                      <div className="loading-track">
-                        <i />
+                      {progress.total > 0 ? (
+                        <span role="status">已检查 {progress.completed} / {progress.total} 个文件</span>
+                      ) : null}
+                      {currentFile ? <span className="preflight-current-file" title={currentFile}>{currentFile}</span> : null}
+                      <div className={`loading-track${progress.total > 0 ? ' determinate' : ''}`}>
+                        <i style={progress.total > 0 ? { width: `${Math.min(100, progress.completed / progress.total * 100)}%` } : undefined} />
                       </div>
+                      <button type="button" className="button secondary" disabled={isCancelling} onClick={() => void cancelProcess()}>
+                        {isCancelling ? '正在取消…' : '取消预检'}
+                      </button>
                     </div>
                   ) : (
                     <>
@@ -1588,7 +1447,11 @@ function App(): React.JSX.Element {
                             onChange={(event) => {
                               const checked = event.currentTarget.checked
                               setShowThumbnails(checked)
-                              savePreferences(recursive, checked)
+                              void savePreferences({
+                                recursive,
+                                showThumbnails: checked,
+                                defaultOutputFolder
+                              })
                             }}
                           />
                           <ImageIcon size={15} />
@@ -1743,94 +1606,8 @@ function App(): React.JSX.Element {
                   ) : null}
                 </main>
 
-                {focusedFile ? <FileDetail file={focusedFile} /> : <EmptyDetail />}
               </div>
 
-              <footer className="action-bar">
-                <div className="output-label">
-                  <HardDrive size={17} />
-                  <span>输出位置</span>
-                </div>
-                <button
-                  type="button"
-                  className="output-path"
-                  disabled={stage === 'processing' || stage === 'preflighting'}
-                  onClick={() => void chooseOutput()}
-                >
-                  <FolderOpen size={16} />
-                  <span>
-                    {outputParent || '选择批次输出父文件夹（不会覆盖源文件）'}
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  className="button secondary"
-                  disabled={stage === 'processing' || stage === 'preflighting'}
-                  onClick={() => void chooseOutput()}
-                >
-                  更改
-                </button>
-                <div className="disk-status">
-                  {preflight?.availableBytes !== undefined &&
-                  checkedOutputParent === outputParent ? (
-                    <>
-                      <CircleCheck size={15} />
-                      <span>
-                        本次仍需 {formatBytes(selectedRequiredBytes)} ·
-                        可用 {formatBytes(preflight.availableBytes)}
-                      </span>
-                    </>
-                  ) : preflight && outputParent ? (
-                    <>
-                      <CircleAlert size={15} />
-                      <span>需重新预检并检查空间</span>
-                    </>
-                  ) : (
-                    <>
-                      <Info size={15} />
-                      <span>预检后检查磁盘空间</span>
-                    </>
-                  )}
-                </div>
-                <button
-                  type="button"
-                  className="button primary action-primary"
-                  disabled={
-                    stage === 'processing' ||
-                    stage === 'preflighting' ||
-                    (stage === 'setup' && !inputs.length)
-                  }
-                  onClick={() => {
-                    if (stage === 'setup') void runPreflight(false)
-                    else requestProcess()
-                  }}
-                >
-                  {stage === 'preflighting' ? (
-                    <LoaderCircle className="spin" size={16} />
-                  ) : stage === 'setup' ? (
-                    <ScanSearch size={16} />
-                  ) : checkedOutputParent !== outputParent ? (
-                    <HardDrive size={16} />
-                  ) : mode === 'detect' ? (
-                    <ScanSearch size={16} />
-                  ) : mode === 'remove' ? (
-                    <Trash2 size={16} />
-                  ) : (
-                    <Tag size={16} />
-                  )}
-                  {stage === 'preflighting'
-                    ? '正在预检'
-                    : stage === 'setup'
-                      ? '开始预检'
-                      : !outputParent
-                        ? '选择输出位置'
-                        : checkedOutputParent !== outputParent
-                          ? '检查空间'
-                          : mode === 'detect'
-                            ? '生成检测报告'
-                            : '开始处理'}
-                </button>
-              </footer>
             </>
           )}
         </section>
@@ -1862,12 +1639,12 @@ function App(): React.JSX.Element {
         <ConfirmModal
           kind={modal}
           selectedCount={selectedIds.size}
-          mode={mode}
           onClose={() => setModal(null)}
           onProcess={() => void startProcess()}
           onDeleteRecovery={() => void deleteRecovery()}
         />
       ) : null}
+
     </div>
   )
 }

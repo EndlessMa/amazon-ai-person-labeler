@@ -163,7 +163,7 @@ function assertUniqueCandidateIds(
 }
 
 /**
- * Puts every output directly under images/. Original basenames are preserved
+ * Puts every output directly under the batch directory. Original basenames are preserved
  * whenever possible. Portable-equivalent duplicates receive a numeric suffix;
  * naturally occurring names such as "photo (2).jpg" are reserved first so a
  * generated duplicate never takes them away.

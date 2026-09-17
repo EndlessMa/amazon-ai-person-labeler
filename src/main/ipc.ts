@@ -102,7 +102,9 @@ function validatePreferences(value: unknown): AppPreferences {
   const preferences = value as Partial<AppPreferences>
   if (
     typeof preferences.recursive !== 'boolean' ||
-    typeof preferences.showThumbnails !== 'boolean'
+    typeof preferences.showThumbnails !== 'boolean' ||
+    typeof preferences.defaultOutputFolder !== 'string' ||
+    preferences.defaultOutputFolder.length > 32_768
   ) {
     throw new TypeError('设置无效')
   }
@@ -214,8 +216,6 @@ export function registerIpcHandlers({
     const summary = await service.process(request, emit)
     rememberAllowedOpenPaths([
       summary.outputDirectory,
-      summary.reportPath,
-      summary.logPath,
       ...summary.results.flatMap((result) =>
         result.outcome === 'passed' && result.outputPath
           ? [result.outputPath]
@@ -237,10 +237,20 @@ export function registerIpcHandlers({
     if (error) throw new Error(error)
   })
 
-  handle(IPC_CHANNELS.getPreferences, () => preferences.get())
-  handle(IPC_CHANNELS.setPreferences, (rawPreferences) =>
-    preferences.set(validatePreferences(rawPreferences))
-  )
+  handle(IPC_CHANNELS.getPreferences, async () => {
+    const stored = await preferences.get()
+    if (stored.defaultOutputFolder) {
+      selectedOutputParents.add(resolve(stored.defaultOutputFolder))
+    }
+    return stored
+  })
+  handle(IPC_CHANNELS.setPreferences, async (rawPreferences) => {
+    const next = validatePreferences(rawPreferences)
+    if (next.defaultOutputFolder) {
+      assertSelectedOutputParent(next.defaultOutputFolder)
+    }
+    await preferences.set(next)
+  })
   handle(IPC_CHANNELS.getRecoveryRecord, () => recovery.get())
   handle(IPC_CHANNELS.exportRecoveryRecord, async () => {
     const paths = await selectPaths(window, {

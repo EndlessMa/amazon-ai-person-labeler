@@ -1,0 +1,99 @@
+name: Release desktop apps
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.label }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: macOS Apple Silicon
+            runner: macos-15
+            command: pnpm dist:mac:arm64
+            artifact: macos-arm64
+            package: release/*-mac-arm64.zip
+          - label: macOS Intel
+            runner: macos-15-intel
+            command: pnpm dist:mac:x64
+            artifact: macos-x64
+            package: release/*-mac-x64.zip
+          - label: Windows x64
+            runner: windows-latest
+            command: pnpm dist:win:x64
+            artifact: windows-x64
+            package: release/*-windows-x64.exe
+
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7.0.1
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6.0.9
+        with:
+          version: 11
+
+      - name: Install Node.js
+        uses: actions/setup-node@v7.0.0
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run checks
+        run: pnpm check
+
+      - name: Package application
+        run: ${{ matrix.command }}
+
+      - name: Upload package
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.package }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Download packages
+        uses: actions/download-artifact@v7.0.0
+        with:
+          path: packages
+          merge-multiple: true
+
+      - name: Create checksums
+        working-directory: packages
+        run: sha256sum * > SHA256SUMS.txt
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "${GITHUB_REF_NAME}"
+          packages/*
+          --repo "${GITHUB_REPOSITORY}"
+          --title "AI人物标签 ${GITHUB_REF_NAME}"
+          --generate-notes
+          --prerelease

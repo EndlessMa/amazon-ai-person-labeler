@@ -9,11 +9,12 @@
     stroke-linejoin="round"
   />
   <circle cx="370" cy="370" r="48" fill="#FFFFFF"/>
+  <circle cx="586" cy="465" r="72" fill="#FFFFFF"/>
   <path
-    d="m548 582 70 70 146-158"
+    d="M430 710c18-105 76-158 156-158s140 53 158 158"
     fill="none"
     stroke="#FFFFFF"
-    stroke-width="58"
+    stroke-width="64"
     stroke-linecap="round"
     stroke-linejoin="round"
   />

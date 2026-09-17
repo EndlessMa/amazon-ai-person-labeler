@@ -27,8 +27,10 @@ import {
   type SourceType
 } from '../../shared/contracts'
 import { AppError, errorMessage } from './errors'
+import { waitForOperation } from './pending-operation'
 import {
   inspectImage,
+  prepareMetadataTools,
   mutateTargetSubject,
   sha256File,
   verifyMutatedImage
@@ -38,10 +40,9 @@ import {
   resolveSafeDestination,
   validateInputOutputSeparation
 } from './path-safety'
-import { allocateSourceAwareOutputPaths } from './output-names'
+import { allocateFlatOutputNames } from './output-names'
 import { RecoveryJournal } from './recovery-journal'
 import type { RecoveryStore } from './recovery'
-import { DiagnosticLogger, writeCsvReport } from './report'
 import {
   assertDiskCapacity,
   availableDiskBytes,
@@ -225,12 +226,19 @@ async function mapWithConcurrency<T, R>(
     }
   }
 
-  await Promise.all(
+  const workers = await Promise.allSettled(
     Array.from(
       { length: Math.min(concurrency, Math.max(1, values.length)) },
       () => worker()
     )
   )
+  const failed =
+    workers.find(
+      (worker) => worker.status === 'rejected' &&
+        normalizeFailure(worker.reason).code !== 'CANCELLED'
+    ) ?? workers.find((worker) => worker.status === 'rejected')
+  if (failed?.status === 'rejected') throw failed.reason
+  throwIfAborted(signal)
   return results
 }
 
@@ -403,16 +411,24 @@ export class BatchService {
         Boolean(this.createThumbnail) &&
         (await this.shouldCreateThumbnails?.()) !== false
       let thumbnailCount = 0
+      let thumbnailsUnavailable = false
+      let completed = 0
       const inputById = new Map(
         request.inputs.map((input) => [input.id, input])
       )
 
       emit({ type: 'phase', phase: 'preflight', message: '正在检查图片和 XMP…' })
+      emit({ type: 'progress', completed: 0, total: prepared.candidates.length })
+      if (prepared.candidates.some((candidate) => !candidate.errorCode)) {
+        emit({ type: 'phase', phase: 'preflight', message: '正在启动元数据引擎…' })
+        await prepareMetadataTools(controller.signal)
+        emit({ type: 'phase', phase: 'preflight', message: '正在检查图片和 XMP…' })
+      }
       const files = await mapWithConcurrency(
         prepared.candidates,
         PREFLIGHT_CONCURRENCY,
         controller.signal,
-        async (candidate, index): Promise<ScannedFile> => {
+        async (candidate): Promise<ScannedFile> => {
           const id = fileId(candidate)
           const input = inputById.get(candidate.sourceId)
           const sourcePath = reportSourcePath(candidate, input)
@@ -438,36 +454,47 @@ export class BatchService {
             archiveFailure?.code ?? candidate.errorCode
           const candidateErrorMessage =
             archiveFailure?.message ?? candidate.errorMessage
-          if (candidateErrorCode) {
-            return {
-              ...base,
-              outcome: invalidOutcome(candidateErrorCode),
-              errorCode: candidateErrorCode,
-              ...(candidateErrorMessage
-                ? { errorMessage: candidateErrorMessage }
-                : {})
-            }
-          }
-
+          emit({
+            type: 'progress', completed,
+            total: prepared!.candidates.length, currentFile: sourcePath
+          })
           try {
-            const inspection = await inspectImage(candidate.canonicalPath)
+            if (candidateErrorCode) {
+              return {
+                ...base,
+                outcome: invalidOutcome(candidateErrorCode),
+                errorCode: candidateErrorCode,
+                ...(candidateErrorMessage
+                  ? { errorMessage: candidateErrorMessage }
+                  : {})
+              }
+            }
+
+            const inspection = await inspectImage(
+              candidate.canonicalPath, controller.signal
+            )
+            throwIfAborted(controller.signal)
             let thumbnailDataUrl: string | undefined
             if (
               createThumbnails &&
+              !thumbnailsUnavailable &&
               thumbnailCount < MAX_EMBEDDED_THUMBNAILS &&
               this.createThumbnail
             ) {
               thumbnailCount += 1
-              thumbnailDataUrl = await this.createThumbnail(
-                candidate.canonicalPath
-              )
+              try {
+                thumbnailDataUrl = await waitForOperation(
+                  () => this.createThumbnail!(candidate.canonicalPath),
+                  2_000,
+                  '缩略图生成超时',
+                  controller.signal
+                )
+              } catch {
+                throwIfAborted(controller.signal)
+                thumbnailsUnavailable = true
+              }
             }
-            emit({
-              type: 'progress',
-              completed: index + 1,
-              total: prepared!.candidates.length,
-              currentFile: sourcePath
-            })
+            throwIfAborted(controller.signal)
             return {
               ...base,
               format: inspection.format,
@@ -482,13 +509,24 @@ export class BatchService {
               ...(thumbnailDataUrl ? { thumbnailDataUrl } : {})
             }
           } catch (error) {
+            throwIfAborted(controller.signal)
             const failure = normalizeFailure(error)
+            if (failure.code === 'INTERNAL_ERROR') {
+              controller.abort()
+              throw error
+            }
             return {
               ...base,
               outcome: invalidOutcome(failure.code),
               errorCode: failure.code,
               errorMessage: failure.message
             }
+          } finally {
+            completed += 1
+            emit({
+              type: 'progress', completed,
+              total: prepared!.candidates.length, currentFile: sourcePath
+            })
           }
         }
       )
@@ -527,6 +565,9 @@ export class BatchService {
         ...(availableBytes !== undefined ? { availableBytes } : {}),
         warnings: [
           ...(prepared.warnings ?? []),
+          ...(thumbnailsUnavailable
+            ? ['部分缩略图生成失败或超时，已跳过预览；图片检查结果不受影响。']
+            : []),
           ...(createThumbnails && supported.length > MAX_EMBEDDED_THUMBNAILS
             ? [
                 `为控制内存占用，仅预生成前 ${MAX_EMBEDDED_THUMBNAILS} 张缩略图；其余文件仍会正常处理。`
@@ -622,9 +663,8 @@ export class BatchService {
     // journal for this attempt could be truncated or overwritten.
     this.preflightState = undefined
     let outputDirectory: string | undefined
-    let imagesDirectory: string | undefined
+    let deliveryDirectory: string | undefined
     let stagingDirectory: string | undefined
-    let logger: DiagnosticLogger | undefined
     let journal: RecoveryJournal | undefined
     let changedBeforeProcessing = new Set<string>()
     const startedAt = new Date().toISOString()
@@ -656,8 +696,8 @@ export class BatchService {
         request.outputParent,
         request.batchId
       )
-      imagesDirectory =
-        request.mode === 'detect' ? undefined : join(outputDirectory, 'images')
+      deliveryDirectory =
+        request.mode === 'detect' ? undefined : outputDirectory
       stagingDirectory =
         request.mode === 'detect'
           ? undefined
@@ -665,18 +705,14 @@ export class BatchService {
               outputDirectory,
               `.ai-labeler-temp-staging-${request.batchId}`
             )
-      if (imagesDirectory && stagingDirectory) {
+      if (deliveryDirectory && stagingDirectory) {
         // Record the safe cleanup target before either mkdir starts so a
         // partial initialization failure cannot leave an untracked staging
         // directory.
         temporaryPaths.push(stagingDirectory)
-        await Promise.all([
-          mkdir(imagesDirectory),
-          mkdir(stagingDirectory, { mode: 0o700 })
-        ])
+        await mkdir(stagingDirectory, { mode: 0o700 })
       }
 
-      logger = new DiagnosticLogger(outputDirectory)
       journal = new RecoveryJournal(this.appDataDirectory, request.batchId)
       await journal.initialize(request.mode, outputDirectory)
       await this.recovery.set({
@@ -688,12 +724,6 @@ export class BatchService {
         reportDraftPath: journal.path,
         ...(temporaryPaths.length > 0 ? { temporaryPaths } : {}),
         reason: '批次处理中'
-      })
-      await logger.initialize({
-        batchId: request.batchId,
-        mode: request.mode,
-        inputCount: state.request.inputs.length,
-        selectedCount: selected.size
       })
     } catch (error) {
       let outputCleanupSucceeded = true
@@ -757,10 +787,9 @@ export class BatchService {
       throw error
     }
 
-    // From here on the journal and logger are guaranteed to be initialized.
-    const activeLogger = logger
+    // From here on the recovery journal and output directory are initialized.
     const activeJournal = journal
-    if (!activeLogger || !activeJournal || !outputDirectory) {
+    if (!activeJournal || !outputDirectory) {
       this.currentController = undefined
       this.currentOperation = undefined
       throw new AppError('INTERNAL_ERROR', '批次初始化状态不完整')
@@ -804,7 +833,7 @@ export class BatchService {
               state,
               file,
               request.mode,
-              imagesDirectory,
+              deliveryDirectory,
               stagingDirectory,
               outputRelativePaths.get(file.id),
               controller.signal,
@@ -830,21 +859,6 @@ export class BatchService {
 
         results.push(result)
         await activeJournal.append(result)
-        await activeLogger
-          .write(
-            result.outcome === 'failed' ? 'ERROR' : 'INFO',
-            'file-result',
-            {
-              fileId: result.fileId,
-              sourcePath: result.sourcePath,
-              outputPath: result.outputPath,
-              action: result.action,
-              outcome: result.outcome,
-              errorCode: result.errorCode,
-              errorMessage: result.errorMessage
-            }
-          )
-          .catch(() => undefined)
         emit({ type: 'file-result', result })
         emit({
           type: 'progress',
@@ -893,16 +907,6 @@ export class BatchService {
           if (!removalFailure) delete corrected.outputPath
           results[index] = corrected
           await activeJournal.append(corrected)
-          await activeLogger
-            .write('ERROR', 'archive-source-changed', {
-              fileId: corrected.fileId,
-              sourcePath: corrected.sourcePath,
-              residualOutputPath: removalFailure
-                ? corrected.outputPath
-                : undefined,
-              removalFailure
-            })
-            .catch(() => undefined)
           emit({ type: 'file-result', result: corrected })
         }
       }
@@ -912,33 +916,12 @@ export class BatchService {
           await this.removeStagingDirectory(stagingDirectory)
         } catch (error) {
           stagingCleanupSucceeded = false
-          await activeLogger
-            .write('WARN', 'staging-cleanup-failed', {
-              path: stagingDirectory,
-              error: errorMessage(error)
-            })
-            .catch(() => undefined)
         }
       }
 
-      emit({ type: 'phase', phase: 'reporting', message: '正在生成报告…' })
+      emit({ type: 'phase', phase: 'reporting', message: '正在整理处理结果…' })
       const finishedAt = new Date().toISOString()
       const counts = calculateCounts(results)
-      const reportPath = await writeCsvReport(outputDirectory, {
-        batchId: request.batchId,
-        mode: request.mode,
-        outputDirectory,
-        startedAt,
-        finishedAt,
-        ...counts,
-        results
-      })
-      await activeLogger.write('INFO', 'batch-complete', {
-        ...counts,
-        cancelledByUser: controller.signal.aborted,
-        hardStop
-      })
-      await activeLogger.flush()
 
       const summary: BatchSummary = {
         batchId: request.batchId,
@@ -947,8 +930,6 @@ export class BatchService {
         startedAt,
         finishedAt,
         ...counts,
-        reportPath,
-        logPath: activeLogger.path,
         results
       }
       emit({
@@ -970,12 +951,6 @@ export class BatchService {
         }
       } catch (error) {
         cleanupSucceeded = false
-        await activeLogger
-          .write('WARN', 'temp-cleanup-failed', {
-            error: errorMessage(error),
-            temporaryPaths
-          })
-          .catch(() => undefined)
         await this.recovery
           .update({ reason: '批次完成，但临时目录清理失败' })
           .catch(() => undefined)
@@ -984,14 +959,14 @@ export class BatchService {
         await this.recovery
           .update({
             reason:
-              '批次已生成报告，但存在因源压缩包变化而无法删除的残留输出'
+              '批次已完成，但存在因源压缩包变化而无法删除的残留输出'
           })
           .catch(() => undefined)
       }
       if (!stagingCleanupSucceeded) {
         await this.recovery
           .update({
-            reason: '批次已生成报告，但输出暂存目录清理失败'
+            reason: '批次已完成，但输出暂存目录清理失败'
           })
           .catch(() => undefined)
       }
@@ -1025,9 +1000,6 @@ export class BatchService {
           }`
         })
         .catch(() => undefined)
-      await activeLogger
-        .write('ERROR', 'batch-aborted', { error: errorMessage(error) })
-        .catch(() => undefined)
       throw error
     } finally {
       this.currentController = undefined
@@ -1052,7 +1024,7 @@ export class BatchService {
     state: PreflightState,
     file: ScannedFile,
     mode: ProcessRequest['mode'],
-    imagesDirectory: string | undefined,
+    deliveryDirectory: string | undefined,
     stagingDirectory: string | undefined,
     outputRelativePath: string | undefined,
     signal: AbortSignal,
@@ -1084,7 +1056,7 @@ export class BatchService {
       }
     }
 
-    if (!imagesDirectory) {
+    if (!deliveryDirectory) {
       throw new AppError('INTERNAL_ERROR', '输出图片目录未创建')
     }
     if (!stagingDirectory) {
@@ -1094,7 +1066,7 @@ export class BatchService {
       throw new AppError('INTERNAL_ERROR', '输出图片名称未分配')
     }
     const outputPath = resolveSafeDestination(
-      imagesDirectory,
+      deliveryDirectory,
       outputRelativePath
     )
     const outputParts = parse(outputPath)
@@ -1165,20 +1137,13 @@ export class BatchService {
     state: PreflightState,
     selected: ReadonlySet<string>
   ): Map<string, string> {
-    return allocateSourceAwareOutputPaths(
+    return allocateFlatOutputNames(
       state.summary.files
         .filter((file) => file.outcome === 'ready' && selected.has(file.id))
-        .map((file) => {
-          const input = state.inputById.get(file.sourceId)
-          return {
-            id: file.id,
-            sourceId: file.sourceId,
-            relativePath: file.relativePath,
-            ...(file.sourceType === 'folder' && input
-              ? { sourceDirectoryName: basename(input.path) }
-              : {})
-          }
-        })
+        .map((file) => ({
+          id: file.id,
+          relativePath: file.relativePath
+        }))
     )
   }
 

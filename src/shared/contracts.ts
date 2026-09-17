@@ -1,4 +1,4 @@
-export const APP_NAME = 'AI 人物标签工具'
+export const APP_NAME = 'AI人物标签'
 export const APP_VERSION = '0.1.0-beta.2'
 export const RULE_VERSION = 'amazon-ai-person-xmp-v1'
 export const TARGET_SUBJECT = 'contains-synthetic-performer'
@@ -163,8 +163,6 @@ export interface BatchSummary {
   skipped: number
   failed: number
   cancelled: number
-  reportPath: string
-  logPath: string
   results: FileResult[]
 }
 
@@ -196,6 +194,7 @@ export type BatchEvent =
 export interface AppPreferences {
   recursive: boolean
   showThumbnails: boolean
+  defaultOutputFolder: string
 }
 
 export interface RecoveryRecord {

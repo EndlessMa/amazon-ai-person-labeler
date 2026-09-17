@@ -228,7 +228,7 @@ const demoApi: DesktopApi = {
     return ['/示例素材/待处理批次.zip']
   },
   async selectOutputFolder() {
-    return '/示例输出/AI人物标签工具'
+    return '/示例输出/AI人物标签'
   },
   async preflight(request) {
     listeners.forEach((listener) =>
@@ -299,7 +299,7 @@ const demoApi: DesktopApi = {
         ...(request.mode === 'detect'
           ? {}
           : {
-              outputPath: `${request.outputParent}/demo-batch/images/${file.relativePath}`
+              outputPath: `${request.outputParent}/demo-batch/${file.displayName}`
             }),
         sourceType: file.sourceType,
         originalState: state,
@@ -361,8 +361,6 @@ const demoApi: DesktopApi = {
       skipped: 0,
       failed,
       cancelled: cancelledCount,
-      reportPath: `${request.outputParent}/demo-batch/report.csv`,
-      logPath: `${request.outputParent}/demo-batch/diagnostic.log`,
       results
     }
     listeners.forEach((listener) =>
@@ -381,10 +379,15 @@ const demoApi: DesktopApi = {
     return
   },
   async getPreferences(): Promise<AppPreferences> {
+    const defaults: AppPreferences = {
+      recursive: true,
+      showThumbnails: true,
+      defaultOutputFolder: '/示例输出/AI人物标签'
+    }
     const stored = window.localStorage.getItem('demo-preferences')
     return stored
-      ? (JSON.parse(stored) as AppPreferences)
-      : { recursive: true, showThumbnails: true }
+      ? { ...defaults, ...(JSON.parse(stored) as Partial<AppPreferences>) }
+      : defaults
   },
   async setPreferences(preferences) {
     window.localStorage.setItem('demo-preferences', JSON.stringify(preferences))
@@ -411,7 +414,7 @@ const demoApi: DesktopApi = {
   },
   async getAppInfo() {
     return {
-      name: 'AI 人物标签工具',
+      name: 'AI人物标签',
       version: '0.1.0-beta.2',
       ruleVersion: 'amazon-ai-person-xmp-v1',
       platform: 'darwin',

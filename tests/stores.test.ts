@@ -22,17 +22,23 @@ async function temporaryDirectory(): Promise<string> {
 }
 
 describe('local stores', () => {
-  it('stores only the two approved preferences', async () => {
+  it('stores the approved preferences including the default output folder', async () => {
     const directory = await temporaryDirectory()
     const store = new PreferencesStore(directory)
     expect(await store.get()).toEqual({
       recursive: true,
-      showThumbnails: true
+      showThumbnails: true,
+      defaultOutputFolder: ''
     })
-    await store.set({ recursive: false, showThumbnails: false })
+    await store.set({
+      recursive: false,
+      showThumbnails: false,
+      defaultOutputFolder: '/share/labelled-images'
+    })
     expect(await store.get()).toEqual({
       recursive: false,
-      showThumbnails: false
+      showThumbnails: false,
+      defaultOutputFolder: '/share/labelled-images'
     })
   })
 

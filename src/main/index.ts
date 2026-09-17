@@ -12,12 +12,19 @@ import { PreferencesStore } from './core/preferences'
 import { RecoveryStore } from './core/recovery'
 import { prepareInputsForBatch } from './input-adapter'
 import { registerIpcHandlers } from './ipc'
+import { APP_NAME } from '../shared/contracts'
 
 let mainWindow: BrowserWindow | undefined
 let batchService: BatchService | undefined
 let removeIpcHandlers: (() => void) | undefined
 let allowQuit = false
 let shutdownPromise: Promise<void> | undefined
+
+function applicationIconPath(): string {
+  return app.isPackaged
+    ? join(process.resourcesPath, 'resources', 'icon.png')
+    : join(app.getAppPath(), 'resources', 'icon.png')
+}
 
 function developmentRendererUrl(): string | undefined {
   const raw = process.env.ELECTRON_RENDERER_URL
@@ -53,21 +60,9 @@ function installNetworkBoundary(): void {
   )
 }
 
-function createThumbnail(path: string): Promise<string | undefined> {
-  return Promise.resolve().then(() => {
-    const source = nativeImage.createFromPath(path)
-    if (source.isEmpty()) return undefined
-    const size = source.getSize()
-    const resized = source.resize({
-      width: 48,
-      height: 48,
-      quality: 'good'
-    })
-    if (resized.isEmpty() || size.width <= 0 || size.height <= 0) {
-      return undefined
-    }
-    return resized.toDataURL()
-  })
+async function createThumbnail(path: string): Promise<string | undefined> {
+  const thumbnail = await nativeImage.createThumbnailFromPath(path, { width: 48, height: 48 })
+  return thumbnail.isEmpty() ? undefined : thumbnail.toDataURL()
 }
 
 function createWindow(
@@ -75,14 +70,15 @@ function createWindow(
   recovery: RecoveryStore
 ): void {
   const window = new BrowserWindow({
-    width: 1440,
-    height: 900,
-    minWidth: 1080,
-    minHeight: 680,
+    width: 1100,
+    height: 620,
+    minWidth: 900,
+    minHeight: 540,
     show: false,
     backgroundColor: '#ffffff',
     autoHideMenuBar: true,
-    title: 'AI 人物标签工具',
+    title: APP_NAME,
+    icon: applicationIconPath(),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
@@ -143,6 +139,8 @@ async function shutdown(): Promise<void> {
   await closeMetadataTools().catch(() => undefined)
 }
 
+app.setPath('userData', join(app.getPath('appData'), 'amazon-ai-person-labeler'))
+app.setName(APP_NAME)
 const hasSingleInstanceLock = app.requestSingleInstanceLock()
 if (!hasSingleInstanceLock) {
   app.quit()
@@ -155,6 +153,9 @@ if (!hasSingleInstanceLock) {
   })
 
   void app.whenReady().then(() => {
+    if (process.platform === 'darwin') {
+      app.dock?.setIcon(applicationIconPath())
+    }
     app.setAppUserModelId('com.internal.amazon-ai-person-labeler')
     installNetworkBoundary()
     const appDataDirectory = app.getPath('userData')
@@ -189,4 +190,3 @@ process.on('uncaughtException', (error) => {
 process.on('unhandledRejection', (error) => {
   console.error('[unhandledRejection]', error)
 })
-

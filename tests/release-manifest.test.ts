@@ -51,7 +51,7 @@ describe('release manifest generation', () => {
   })
 
   it.each([
-    ['旧版本', 'AI 人物标签工具-0.0.1-mac-arm64.zip'],
+    ['旧版本', 'AI人物标签-0.0.1-mac-arm64.zip'],
     ['未知产品', 'unknown-tool-0.1.0-windows-x64.exe'],
     ['错误目标', `${packageMetadata.build.productName}-${packageMetadata.version}-linux-x64.zip`]
   ])('拒绝 release 目录中的%s安装包', async (_label, rejectedName) => {

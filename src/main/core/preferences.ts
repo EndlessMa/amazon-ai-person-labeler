@@ -5,7 +5,8 @@ import { atomicWrite } from './runtime-fs'
 
 const DEFAULT_PREFERENCES: AppPreferences = {
   recursive: true,
-  showThumbnails: true
+  showThumbnails: true,
+  defaultOutputFolder: ''
 }
 
 export class PreferencesStore {
@@ -28,7 +29,11 @@ export class PreferencesStore {
         showThumbnails:
           typeof record.showThumbnails === 'boolean'
             ? record.showThumbnails
-            : DEFAULT_PREFERENCES.showThumbnails
+            : DEFAULT_PREFERENCES.showThumbnails,
+        defaultOutputFolder:
+          typeof record.defaultOutputFolder === 'string'
+            ? record.defaultOutputFolder
+            : DEFAULT_PREFERENCES.defaultOutputFolder
       }
     } catch {
       return DEFAULT_PREFERENCES
@@ -38,9 +43,12 @@ export class PreferencesStore {
   async set(preferences: AppPreferences): Promise<void> {
     const validated: AppPreferences = {
       recursive: Boolean(preferences.recursive),
-      showThumbnails: Boolean(preferences.showThumbnails)
+      showThumbnails: Boolean(preferences.showThumbnails),
+      defaultOutputFolder:
+        typeof preferences.defaultOutputFolder === 'string'
+          ? preferences.defaultOutputFolder
+          : ''
     }
     await atomicWrite(this.path, `${JSON.stringify(validated, null, 2)}\n`)
   }
 }
-

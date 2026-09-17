@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { createReadStream } from 'node:fs'
 import { readFile, stat } from 'node:fs/promises'
-import { ExifTool } from 'exiftool-vendored'
+import { ExifTool, type ReadRawTaskOptions } from 'exiftool-vendored'
 import type {
   BatchAction,
   FileFingerprint,
@@ -17,6 +17,7 @@ import {
   type ImageStructure
 } from './image-format'
 import { inspectEmbeddedXmp } from './xmp'
+import { waitForOperation } from './pending-operation'
 
 export { imagePayloadSha256 } from './image-format'
 
@@ -61,12 +62,58 @@ export interface MutationVerification {
   postVerified: boolean
 }
 
-const metadataTool = new ExifTool({
+const createMetadataTool = (): ExifTool => new ExifTool({
   maxProcs: 2,
   useMWG: false,
   taskTimeoutMillis: 120_000,
   taskRetries: 0
 })
+let metadataTool = createMetadataTool()
+let metadataToolInterrupted = false
+
+function interruptMetadataTool(): void {
+  metadataToolInterrupted = true
+  void metadataTool.end(false).catch(() => undefined)
+}
+
+/** A new batch may retry a stopped engine, but files within a batch cannot. */
+export async function prepareMetadataTools(signal: AbortSignal): Promise<void> {
+  if (metadataToolClosed) throw new AppError('INTERNAL_ERROR', '元数据引擎已经关闭')
+  if (metadataToolInterrupted) {
+    metadataTool = createMetadataTool()
+    metadataToolInterrupted = false
+  }
+  try {
+    await waitForOperation(
+      () => metadataTool.version(),
+      30_000,
+      '元数据引擎启动超时（30 秒）。请检查 ExifTool 组件是否完整或被安全软件拦截，然后重试。',
+      signal,
+      interruptMetadataTool
+    )
+  } catch (error) {
+    interruptMetadataTool()
+    if (error instanceof AppError) throw error
+    throw new AppError('INTERNAL_ERROR', `元数据引擎启动失败：${errorText(error)}`)
+  }
+}
+
+function readRaw(
+  filePath: string,
+  options: ReadRawTaskOptions,
+  signal?: AbortSignal
+): ReturnType<ExifTool['readRaw']> {
+  if (metadataToolInterrupted) {
+    return Promise.reject(new AppError('INTERNAL_ERROR', '元数据引擎已停止，请重新预检'))
+  }
+  return waitForOperation(
+    () => metadataTool.readRaw(filePath, options),
+    300_000,
+    `元数据检查超时：${filePath}。请检查该文件和 ExifTool 组件后重新预检。`,
+    signal,
+    interruptMetadataTool
+  )
+}
 
 const MISSING_YCBCR_POSITIONING_WARNING =
   'Missing required JPEG IFD0 tag 0x0213 YCbCrPositioning'
@@ -122,15 +169,16 @@ function isAllowedValidationWarning(
   )
 }
 
-async function validateMetadataWithExifTool(filePath: string): Promise<void> {
+async function validateMetadataWithExifTool(filePath: string, signal?: AbortSignal): Promise<void> {
   let tags: Record<string, unknown>
   try {
-    tags = (await metadataTool.readRaw(filePath, {
+    tags = (await readRaw(filePath, {
       readArgs: ['-G1', '-a', '-s', '-validate', '-warning', '-error'],
       ignoreMinorErrors: false,
       useMWG: false
-    })) as Record<string, unknown>
+    }, signal)) as Record<string, unknown>
   } catch (error) {
+    if (error instanceof AppError) throw error
     throw new AppError('MALFORMED_METADATA', 'ExifTool 无法安全读取元数据', {
       filePath,
       cause: errorText(error)
@@ -196,11 +244,12 @@ function shouldExcludeMetadataKey(key: string): boolean {
 }
 
 export async function readMetadataSnapshot(
-  filePath: string
+  filePath: string,
+  signal?: AbortSignal
 ): Promise<MetadataSnapshot> {
   let tags: Record<string, unknown>
   try {
-    tags = (await metadataTool.readRaw(filePath, {
+    tags = (await readRaw(filePath, {
       readArgs: [
         '-G1',
         '-a',
@@ -211,8 +260,9 @@ export async function readMetadataSnapshot(
       ],
       ignoreMinorErrors: false,
       useMWG: false
-    })) as Record<string, unknown>
+    }, signal)) as Record<string, unknown>
   } catch (error) {
+    if (error instanceof AppError) throw error
     throw new AppError('MALFORMED_METADATA', '无法读取元数据语义快照', {
       filePath,
       cause: errorText(error)
@@ -320,7 +370,7 @@ export async function sha256File(filePath: string): Promise<string> {
  * image. It validates the actual container, size/pixel limits, embedded XMP,
  * and EXIF/XMP consistency before returning a source fingerprint.
  */
-export async function inspectImage(filePath: string): Promise<ImageInspection> {
+export async function inspectImage(filePath: string, signal?: AbortSignal): Promise<ImageInspection> {
   if (metadataToolClosed) {
     throw new AppError('INTERNAL_ERROR', '元数据引擎已经关闭')
   }
@@ -328,8 +378,8 @@ export async function inspectImage(filePath: string): Promise<ImageInspection> {
   const sourceSha256 = createHash('sha256').update(buffer).digest('hex')
   const subject = inspectEmbeddedXmp(buffer, structure.format)
 
-  await validateMetadataWithExifTool(filePath)
-  const metadataSnapshot = await readMetadataSnapshot(filePath)
+  await validateMetadataWithExifTool(filePath, signal)
+  const metadataSnapshot = await readMetadataSnapshot(filePath, signal)
   const finalStat = await stat(filePath)
   if (finalStat.size !== buffer.length || finalStat.mtimeMs !== modifiedMs) {
     throw new AppError('SOURCE_CHANGED', '图片在元数据检查期间发生变化', {

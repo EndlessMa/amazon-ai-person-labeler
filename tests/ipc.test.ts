@@ -60,7 +60,11 @@ describe('IPC sender and local-path authorization', () => {
     cancel: vi.fn()
   }
   const preferences = {
-    get: vi.fn(() => ({ recursive: true, showThumbnails: true })),
+    get: vi.fn(async () => ({
+      recursive: true,
+      showThumbnails: true,
+      defaultOutputFolder: ''
+    })),
     set: vi.fn()
   }
   const recovery = {
@@ -83,6 +87,13 @@ describe('IPC sender and local-path authorization', () => {
     service.preflight.mockReset()
     service.process.mockReset()
     service.cancel.mockReset()
+    preferences.get.mockReset()
+    preferences.get.mockResolvedValue({
+      recursive: true,
+      showThumbnails: true,
+      defaultOutputFolder: ''
+    })
+    preferences.set.mockReset()
     registerIpcHandlers({
       window: window as never,
       service,
@@ -155,14 +166,63 @@ describe('IPC sender and local-path authorization', () => {
     ).resolves.toEqual({ batchId: 'preflight' })
   })
 
+  it('restores a persisted default output and only saves picker-approved folders', async () => {
+    const savedOutput = resolve('/tmp/saved-output')
+    const unapprovedOutput = resolve('/tmp/unapproved-output')
+    preferences.get.mockResolvedValue({
+      recursive: true,
+      showThumbnails: true,
+      defaultOutputFolder: savedOutput
+    })
+    service.preflight.mockResolvedValue({ batchId: 'preflight' })
+
+    await expect(invoke(IPC_CHANNELS.getPreferences)).resolves.toMatchObject({
+      defaultOutputFolder: savedOutput
+    })
+    await expect(
+      invoke(IPC_CHANNELS.preflight, {
+        mode: 'add',
+        recursive: true,
+        inputs: [
+          { id: 'dragged', path: '/tmp/dragged.jpg', kind: 'file' }
+        ],
+        outputParent: savedOutput
+      })
+    ).resolves.toEqual({ batchId: 'preflight' })
+
+    await expect(
+      invoke(IPC_CHANNELS.setPreferences, {
+        recursive: true,
+        showThumbnails: true,
+        defaultOutputFolder: unapprovedOutput
+      })
+    ).rejects.toThrow('系统文件夹选择器')
+
+    electronMocks.showOpenDialog.mockResolvedValue({
+      canceled: false,
+      filePaths: [unapprovedOutput]
+    })
+    await invoke(IPC_CHANNELS.selectOutputFolder)
+    await expect(
+      invoke(IPC_CHANNELS.setPreferences, {
+        recursive: true,
+        showThumbnails: true,
+        defaultOutputFolder: unapprovedOutput
+      })
+    ).resolves.toBeUndefined()
+    expect(preferences.set).toHaveBeenCalledWith({
+      recursive: true,
+      showThumbnails: true,
+      defaultOutputFolder: unapprovedOutput
+    })
+  })
+
   it('opens only successful batch artifacts, never request paths or failed outputs', async () => {
     const input = resolve('/tmp/dragged-image.jpg')
     const outputParent = resolve('/tmp/chosen-output')
     const outputDirectory = resolve(outputParent, 'AI人物标签-batch')
-    const reportPath = resolve(outputDirectory, 'report.csv')
-    const logPath = resolve(outputDirectory, 'diagnostic.log')
-    const passedImage = resolve(outputDirectory, 'images', 'passed.jpg')
-    const failedImage = resolve(outputDirectory, 'images', 'failed.jpg')
+    const passedImage = resolve(outputDirectory, 'passed.jpg')
+    const failedImage = resolve(outputDirectory, 'failed.jpg')
     const summary: BatchSummary = {
       batchId: 'batch',
       mode: 'add',
@@ -174,8 +234,6 @@ describe('IPC sender and local-path authorization', () => {
       skipped: 0,
       failed: 1,
       cancelled: 0,
-      reportPath,
-      logPath,
       results: [
         {
           fileId: 'passed',
@@ -220,16 +278,11 @@ describe('IPC sender and local-path authorization', () => {
     await expect(invoke(IPC_CHANNELS.openPath, failedImage)).rejects.toThrow(
       '允许范围'
     )
-    for (const artifact of [
-      outputDirectory,
-      reportPath,
-      logPath,
-      passedImage
-    ]) {
+    for (const artifact of [outputDirectory, passedImage]) {
       await expect(
         invoke(IPC_CHANNELS.openPath, artifact)
       ).resolves.toBeUndefined()
     }
-    expect(electronMocks.openPath).toHaveBeenCalledTimes(4)
+    expect(electronMocks.openPath).toHaveBeenCalledTimes(2)
   })
 })

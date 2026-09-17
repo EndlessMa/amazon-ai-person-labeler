@@ -45,7 +45,7 @@
   },
   "build": {
     "appId": "com.internal.amazon-ai-person-labeler",
-    "productName": "AI 人物标签工具",
+    "productName": "AI人物标签",
     "asar": true,
     "asarUnpack": [
       "node_modules/exiftool-vendored.pl/**/*",

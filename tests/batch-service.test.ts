@@ -4,14 +4,13 @@ import {
   copyFile,
   mkdir,
   mkdtemp,
-  readFile,
   realpath,
   readdir,
   rm,
   stat
 } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { basename, join, relative, resolve } from 'node:path'
+import { join, relative, resolve } from 'node:path'
 import { afterAll, afterEach, describe, expect, it } from 'vitest'
 import { prepareInputsForBatch } from '../src/main/input-adapter'
 import { BatchService } from '../src/main/core/batch-service'
@@ -70,25 +69,6 @@ async function hashTree(root: string): Promise<Record<string, string>> {
     ] as const)
   )
   return Object.fromEntries(entries)
-}
-
-async function expectReportArtifacts(
-  reportPath: string,
-  logPath: string
-): Promise<void> {
-  const [report, log, reportStats, logStats] = await Promise.all([
-    readFile(reportPath, 'utf8'),
-    readFile(logPath, 'utf8'),
-    stat(reportPath),
-    stat(logPath)
-  ])
-  expect(reportStats.isFile()).toBe(true)
-  expect(logStats.isFile()).toBe(true)
-  expect(report.startsWith('\uFEFF')).toBe(true)
-  expect(report).toContain('批次ID')
-  expect(report).toContain('源文件SHA-256')
-  expect(log).toContain('"event":"batch-start"')
-  expect(log).toContain('"event":"batch-complete"')
 }
 
 async function createService(root: string): Promise<{
@@ -178,21 +158,11 @@ describe.sequential('BatchService + prepareInputsForBatch 真实端到端', () =
       expect(detected.summary.succeeded).toBe(5)
       expect(detected.summary.failed).toBe(1)
       expect(detected.summary.skipped).toBe(2)
-      await expect(
-        access(join(detected.summary.outputDirectory, 'images'))
-      ).rejects.toThrow()
-      await expectReportArtifacts(
-        detected.summary.reportPath,
-        detected.summary.logPath
-      )
+      expect(await readdir(detected.summary.outputDirectory)).toEqual([])
       expect(await hashTree(IMAGE_FIXTURES)).toEqual(originalSourceHashes)
 
       const added = await runFolderBatch(root, 'add', IMAGE_FIXTURES)
-      const addedImagesRoot = join(added.summary.outputDirectory, 'images')
-      const addedSourceRoot = join(
-        addedImagesRoot,
-        basename(IMAGE_FIXTURES)
-      )
+      const addedImagesRoot = added.summary.outputDirectory
       const addedImages = await listFiles(addedImagesRoot)
       expect(added.summary.results).toHaveLength(8)
       expect(
@@ -212,7 +182,7 @@ describe.sequential('BatchService + prepareInputsForBatch 真实端到端', () =
       expect(added.summary.skipped).toBe(2)
       expect(addedImages).toHaveLength(added.ready.length)
       expect(addedImages.every((output) =>
-        isDirectChild(addedSourceRoot, output)
+        isDirectChild(addedImagesRoot, output)
       )).toBe(true)
       expect(
         added.summary.results
@@ -227,22 +197,11 @@ describe.sequential('BatchService + prepareInputsForBatch 真实端到端', () =
           expect((await stat(output)).mode & 0o444).toBe(0o444)
         }
       }
-      await expectReportArtifacts(
-        added.summary.reportPath,
-        added.summary.logPath
-      )
       expect(await hashTree(IMAGE_FIXTURES)).toEqual(originalSourceHashes)
 
       const addedSourceHashes = await hashTree(addedImagesRoot)
-      const removed = await runFolderBatch(root, 'remove', addedSourceRoot)
-      const removedImagesRoot = join(
-        removed.summary.outputDirectory,
-        'images'
-      )
-      const removedSourceRoot = join(
-        removedImagesRoot,
-        basename(addedSourceRoot)
-      )
+      const removed = await runFolderBatch(root, 'remove', addedImagesRoot)
+      const removedImagesRoot = removed.summary.outputDirectory
       const removedImages = await listFiles(removedImagesRoot)
       expect(removed.summary.results).toHaveLength(5)
       expect(removed.summary.succeeded).toBe(5)
@@ -250,16 +209,12 @@ describe.sequential('BatchService + prepareInputsForBatch 真实端到端', () =
       expect(removed.summary.skipped).toBe(0)
       expect(removedImages).toHaveLength(removed.ready.length)
       expect(removedImages.every((output) =>
-        isDirectChild(removedSourceRoot, output)
+        isDirectChild(removedImagesRoot, output)
       )).toBe(true)
       for (const output of removedImages) {
         const inspected = await inspectImage(output)
         expect(inspected.subject.exactCount).toBe(0)
       }
-      await expectReportArtifacts(
-        removed.summary.reportPath,
-        removed.summary.logPath
-      )
       expect(await hashTree(addedImagesRoot)).toEqual(addedSourceHashes)
       expect(await hashTree(IMAGE_FIXTURES)).toEqual(originalSourceHashes)
     },
@@ -267,7 +222,7 @@ describe.sequential('BatchService + prepareInputsForBatch 真实端到端', () =
   )
 
   it(
-    '两个输入文件夹含同名图片时均通过预检并输出到各自顶层文件夹',
+    '两个输入文件夹含同名图片时平铺输出并自动追加序号',
     async () => {
       const root = await makeTemporaryRoot('ai-label-folder-groups-e2e-')
       const firstDirectory = join(root, '牛油果收纳盒')
@@ -333,9 +288,9 @@ describe.sequential('BatchService + prepareInputsForBatch 真实端到端', () =
           },
           discardEvent
         )
-        const imagesRoot = join(summary.outputDirectory, 'images')
-        const firstOutput = join(imagesRoot, '牛油果收纳盒', '主图.png')
-        const secondOutput = join(imagesRoot, '沙拉罐图片', '主图.png')
+        const imagesRoot = summary.outputDirectory
+        const firstOutput = join(imagesRoot, '主图.png')
+        const secondOutput = join(imagesRoot, '主图 (2).png')
         const topLevelEntries = await readdir(imagesRoot, {
           withFileTypes: true
         })
@@ -350,11 +305,11 @@ describe.sequential('BatchService + prepareInputsForBatch 真实端到端', () =
             .map((entry) => entry.name)
             .sort((left, right) => left.localeCompare(right, 'zh-CN'))
         ).toEqual(
-          ['牛油果收纳盒', '沙拉罐图片'].sort((left, right) =>
+          ['主图.png', '主图 (2).png'].sort((left, right) =>
             left.localeCompare(right, 'zh-CN')
           )
         )
-        expect(topLevelEntries.every((entry) => entry.isDirectory())).toBe(
+        expect(topLevelEntries.every((entry) => entry.isFile())).toBe(
           true
         )
         expect(await listFiles(imagesRoot)).toEqual(
@@ -387,7 +342,7 @@ describe.sequential('BatchService + prepareInputsForBatch 真实端到端', () =
   )
 
   it(
-    '多张图片直接平铺到 images，跨平台重名时只给重复文件追加序号',
+    '多张图片直接平铺到批次目录，跨平台重名时只给重复文件追加序号',
     async () => {
       const root = await makeTemporaryRoot('ai-label-flat-output-e2e-')
       const firstDirectory = join(root, '第一组')
@@ -457,7 +412,7 @@ describe.sequential('BatchService + prepareInputsForBatch 真实端到端', () =
           },
           discardEvent
         )
-        const imagesRoot = join(summary.outputDirectory, 'images')
+        const imagesRoot = summary.outputDirectory
         const outputNames = (await readdir(imagesRoot)).sort((left, right) =>
           left.localeCompare(right, 'zh-CN')
         )
@@ -561,7 +516,7 @@ describe.sequential('BatchService + prepareInputsForBatch 真实端到端', () =
   )
 
   it(
-    'ZIP 中的图片也直接平铺到同一个 images 文件夹',
+    'ZIP 中的图片也直接平铺到批次文件夹',
     async () => {
       const root = await makeTemporaryRoot('ai-label-flat-archive-e2e-')
       const outputParent = join(root, 'output')
@@ -593,7 +548,7 @@ describe.sequential('BatchService + prepareInputsForBatch 真实端到端', () =
           },
           discardEvent
         )
-        const imagesRoot = join(summary.outputDirectory, 'images')
+        const imagesRoot = summary.outputDirectory
         const entries = await readdir(imagesRoot, { withFileTypes: true })
 
         expect(summary.succeeded).toBe(2)
@@ -706,10 +661,9 @@ describe.sequential('BatchService + prepareInputsForBatch 真实端到端', () =
           (await inspectImage(directResult!.outputPath!)).subject.exactCount
         ).toBe(1)
         expect(
-          await listFiles(join(summary.outputDirectory, 'images'))
+          await listFiles(summary.outputDirectory)
         ).toHaveLength(1)
         expect(await sha256File(direct)).toBe(directShaBefore)
-        await expectReportArtifacts(summary.reportPath, summary.logPath)
       } finally {
         await service.dispose()
         await recovery.clear().catch(() => undefined)
