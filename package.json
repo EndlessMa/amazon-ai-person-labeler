@@ -15,9 +15,9 @@
     "test:fixtures": "node scripts/create-regression-fixtures.mjs",
     "check": "pnpm typecheck && pnpm test && pnpm build",
     "manifest": "node scripts/generate-release-manifest.mjs",
-    "dist:mac:arm64": "pnpm build && electron-builder --mac zip --arm64 && pnpm manifest",
-    "dist:mac:x64": "pnpm build && electron-builder --mac zip --x64 && pnpm manifest",
-    "dist:win:x64": "node scripts/assert-windows-build-env.mjs && pnpm build && electron-builder --win portable --x64 && pnpm manifest"
+    "dist:mac:arm64": "pnpm build && electron-builder --mac zip --arm64 --publish never && pnpm manifest",
+    "dist:mac:x64": "pnpm build && electron-builder --mac zip --x64 --publish never && pnpm manifest",
+    "dist:win:x64": "node scripts/assert-windows-build-env.mjs && pnpm build && electron-builder --win portable --x64 --publish never && pnpm manifest"
   },
   "dependencies": {
     "7zip-bin-full": "26.2.1",
