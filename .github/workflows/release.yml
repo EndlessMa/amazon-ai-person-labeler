@@ -83,6 +83,14 @@ jobs:
           path: packages
           merge-multiple: true
 
+      - name: Normalize download filenames
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          mv packages/*-mac-arm64.zip "packages/AI-Person-Labeler-${version}-mac-arm64.zip"
+          mv packages/*-mac-x64.zip "packages/AI-Person-Labeler-${version}-mac-x64.zip"
+          mv packages/*-windows-x64.exe "packages/AI-Person-Labeler-${version}-windows-x64.exe"
+
       - name: Create checksums
         working-directory: packages
         run: sha256sum * > SHA256SUMS.txt

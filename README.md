@@ -28,9 +28,9 @@ V1 不判断图片是否包含 AI 生成人物，也不上传亚马逊。使用�
 请在 [GitHub Releases](https://github.com/EndlessMa/amazon-ai-person-labeler/releases)
 下载最新版本：
 
-- `AI人物标签-*-mac-arm64.zip`：macOS Apple Silicon（M1/M2/M3/M4 等）。
-- `AI人物标签-*-mac-x64.zip`：macOS Intel。
-- `AI人物标签-*-windows-x64.exe`：Windows 10/11 64 位便携版。
+- `AI-Person-Labeler-*-mac-arm64.zip`：macOS Apple Silicon（M1/M2/M3/M4 等）。
+- `AI-Person-Labeler-*-mac-x64.zip`：macOS Intel。
+- `AI-Person-Labeler-*-windows-x64.exe`：Windows 10/11 64 位便携版。
 - `SHA256SUMS.txt`：下载文件完整性校验值。
 
 ## 本地开发
